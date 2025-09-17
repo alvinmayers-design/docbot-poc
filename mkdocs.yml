@@ -2,9 +2,11 @@
 nav:
   - Home: index.md
   - Releases:
-      - Unreleased: releases/unreleased/
-  - ADRs: adr/
-  - System: system/
+      - Unreleased:
+          - "PR #1": releases/unreleased/1-summary.md
+          - "PR #2": releases/unreleased/2-summary.md
+  - System:
+      - Status: system/docbot-status.md
 markdown_extensions:
   - admonition
   - toc:
