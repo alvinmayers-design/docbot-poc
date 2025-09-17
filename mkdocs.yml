@@ -1,0 +1,14 @@
+﻿site_name: Acme Docs
+nav:
+  - Home: index.md
+  - Releases:
+      - Unreleased: releases/unreleased/
+  - ADRs: adr/
+  - System: system/
+markdown_extensions:
+  - admonition
+  - toc:
+      permalink: true
+  - tables
+theme:
+  name: material

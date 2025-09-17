@@ -1,0 +1,8 @@
+fastapi==0.112.0
+uvicorn==0.30.5
+pydantic==2.8.2
+requests==2.32.3
+PyYAML==6.0.2
+mkdocs==1.5.3
+mkdocs-material==9.5.18
+
