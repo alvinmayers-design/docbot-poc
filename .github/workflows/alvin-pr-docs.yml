@@ -18,6 +18,11 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
       - name: Collect PR metadata and changed files
         id: pr
         uses: actions/github-script@v7
@@ -36,45 +41,87 @@ jobs:
               patch: f.patch || ''
             }))));
 
-      - name: Generate doc preview with OpenAI (POC)
-        id: preview
+      - name: Generate preview (OpenAI if available; otherwise fallback)
+        run: |
+          node - <<'NODE'
+          const fs = require('fs');
+
+          function write(file, text) {
+            fs.writeFileSync(file, String(text ?? ''), 'utf8');
+          }
+
+          const files = JSON.parse(process.env.FILES || '[]');
+          const title = process.env.TITLE || '';
+          const hasKey = !!process.env.OPENAI_API_KEY;
+
+          const fallback = () => [
+            `# PR: ${title || '(no title)'}`,
+            '',
+            '## What changed',
+            '- (Auto-fallback) Summarize key changes.',
+            '',
+            '## Why',
+            '- (Auto-fallback) Rationale for this change.',
+            '',
+            '## How to validate',
+            '- (Auto-fallback) Steps to test locally and in CI.',
+            '',
+            '## Risk / Rollback',
+            '- (Auto-fallback) Risks and how to revert safely.',
+            '',
+            '## Changed files',
+            ...files.slice(0, 20).map(f => `- ${f.filename} (${f.status})`)
+          ].join('\n');
+
+          async function run() {
+            if (!hasKey) {
+              write('ALVIN_PR_PREVIEW.md', fallback());
+              return;
+            }
+
+            const sys = 'You are ALVIN, an assistant that writes concise PR documentation (What changed, Why, How to validate, Risk/rollback). Use markdown and short sections.';
+            const user = 'PR Title: ' + title + '\\n\\nChanged files (name, status, patch excerpt):\\n' +
+              files.map(f => '- ' + f.filename + ' (' + f.status + ')\\n' + (f.patch || '').slice(0, 4000)).join('\\n\\n');
+
+            try {
+              const r = await fetch('https://api.openai.com/v1/chat/completions', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + process.env.OPENAI_API_KEY },
+                body: JSON.stringify({
+                  model: 'gpt-4o-mini',
+                  messages: [{ role: 'system', content: sys }, { role: 'user', content: user }],
+                  temperature: 0.2,
+                  max_tokens: 900
+                })
+              });
+              if (!r.ok) throw new Error('OpenAI HTTP ' + r.status + ': ' + await r.text());
+              const j = await r.json();
+              const text = (j.choices?.[0]?.message?.content || '').trim() || fallback();
+              write('ALVIN_PR_PREVIEW.md', text);
+            } catch (e) {
+              // Any error → fallback so the job still succeeds
+              write('ALVIN_PR_PREVIEW.md', fallback() + `\n\n> (Fallback used; error: ${e.message})\n`);
+            }
+          }
+
+          run().catch(e => {
+            write('ALVIN_PR_PREVIEW.md', 'ALVIN fallback (unexpected error)\\n\\n' + e.message);
+          });
+          NODE
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           FILES: ${{ steps.pr.outputs.files }}
           TITLE: ${{ steps.pr.outputs.title }}
-        run: |
-          node -e "
-          const files = JSON.parse(process.env.FILES || '[]');
-          const title = process.env.TITLE || '';
-          const sys = 'You are ALVIN, an assistant that writes concise PR documentation (What changed, Why, How to validate, Risk/rollback). Use markdown and short sections.';
-          const user = 'PR Title: ' + title + '\\n\\nChanged files (name, status, patch excerpt):\\n' +
-            files.map(f => '- ' + f.filename + ' (' + f.status + ')\\n' + (f.patch || '').slice(0, 4000)).join('\\n\\n');
 
-          async function main(){
-            const r = await fetch('https://api.openai.com/v1/chat/completions', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + process.env.OPENAI_API_KEY },
-              body: JSON.stringify({
-                model: 'gpt-4o-mini',
-                messages: [{ role: 'system', content: sys }, { role: 'user', content: user }],
-                temperature: 0.2,
-                max_tokens: 900
-              })
-            });
-            if (!r.ok) {
-              console.error('OpenAI API error status:', r.status);
-              const text = await r.text();
-              console.error(text);
-              process.exit(1);
-            }
-            const j = await r.json();
-            const text = (j.choices?.[0]?.message?.content || 'No output').trim();
-            require('fs').writeFileSync('ALVIN_PR_PREVIEW.md', text);
-            const esc = (s) => s.replace(/%/g, '%25').replace(/\\r/g, '%0D').replace(/\\n/g, '%0A');
-            require('fs').appendFileSync(process.env.GITHUB_OUTPUT, `preview=${esc(text)}\\n`);
-          }
-          main().catch(e => { console.error(e); process.exit(1); });
-          "
+      - name: Expose preview as output (safe heredoc)
+        id: preview
+        shell: bash
+        run: |
+          {
+            echo "preview<<'EOF'"
+            cat ALVIN_PR_PREVIEW.md
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Move preview into docs directory
         run: |
@@ -98,7 +145,7 @@ jobs:
             const body = [
               '🧪 **ALVIN – Autogenerated PR Docs**',
               '',
-              '> POC summary. Human review required.',
+              '> Preview generated automatically. Human review required.',
               '',
               '<details><summary>Preview</summary>',
               '',
