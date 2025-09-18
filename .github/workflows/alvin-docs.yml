@@ -28,6 +28,11 @@ jobs:
       - name: Install deps (script-only)
         run: |
           npm i --no-audit --no-fund openai@^4.56.0
+    
+      - name: Fetch base commit for diff
+        run: |
+          # Ensure the base commit exists locally so git can compute a merge-base / diff
+          git fetch origin ${{ github.event.pull_request.base.sha }} --depth=1
 
       - name: Generate docs via ALVIN
         id: alvin
