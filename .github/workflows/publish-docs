@@ -1,0 +1,62 @@
+name: Publish Docs to GitHub Pages
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'docs/**'
+      - 'mkdocs.yml'
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install MkDocs (and theme)
+        run: |
+          pip install --upgrade pip
+          pip install mkdocs mkdocs-material
+
+      # Optional: regenerate a simple index of ALVIN docs
+      - name: Build PR docs index
+        run: |
+          mkdir -p docs
+          echo "# ALVIN PR Docs Index" > docs/ALVIN_INDEX.md
+          echo "" >> docs/ALVIN_INDEX.md
+          for f in $(ls docs/ALVIN_PR_*.md 2>/dev/null || true); do
+            base=$(basename "$f" .md)
+            echo "- [${base}](${base}.md)" >> docs/ALVIN_INDEX.md
+          done
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Build with MkDocs
+        run: mkdocs build --strict
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
