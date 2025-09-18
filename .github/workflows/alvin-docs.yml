@@ -56,17 +56,20 @@ jobs:
           # Push to the contributor branch (not the read-only merge ref)
           git push origin HEAD:${{ github.event.pull_request.head.ref }}
 
-      - name: Read preview (best-effort)
+            - name: Read preview (best-effort)
         id: preview
         run: |
           PREVIEW_FILE=$(ls docs/ALVIN_PR_*\.preview.txt | tail -n1 || true)
           if [ -n "$PREVIEW_FILE" ]; then
-            echo "preview<<EOF" >> $GITHUB_OUTPUT
-            cat "$PREVIEW_FILE" >> $GITHUB_OUTPUT
-            echo "EOF" >> $GITHUB_OUTPUT
+            PREVIEW_CONTENT="$(cat "$PREVIEW_FILE")"
+            PREVIEW_CONTENT="${PREVIEW_CONTENT//'%'/'%25'}"
+            PREVIEW_CONTENT="${PREVIEW_CONTENT//$'\n'/'%0A'}"
+            PREVIEW_CONTENT="${PREVIEW_CONTENT//$'\r'/'%0D'}"
+            echo "preview=$PREVIEW_CONTENT" >> $GITHUB_OUTPUT
           else
             echo "preview=No preview available." >> $GITHUB_OUTPUT
           fi
+
 
       - name: Comment on PR
         uses: actions/github-script@v7
