@@ -1,0 +1,11 @@
+{
+  "name": "alvin-poc",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "demo": "echo 'Create a PR to see ALVIN in action.'"
+  },
+  "dependencies": {
+    "openai": "^4.56.0"
+  }
+}
