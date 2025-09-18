@@ -1,0 +1,20 @@
+# Title: Update GitHub Actions Workflow for Documentation Generation
+
+## WHAT
+- Enhanced the GitHub Actions workflow for generating documentation by:
+  - Checking out the contributor's branch instead of the read-only merge ref.
+  - Modifying dependency installation to exclude audit and funding.
+  - Improving the handling of documentation previews and commit logic.
+
+## WHY
+- To ensure that the workflow correctly references the contributor's branch, allowing for accurate documentation generation.
+- To streamline dependency installation, reducing unnecessary checks.
+- To improve the robustness of the preview handling and ensure meaningful output even when no preview is available.
+
+## HOW
+- Key files and logic:
+  - Updated `.github/workflows/alvin-docs.yml` to:
+    - Use `actions/checkout@v4` with parameters to check out the correct branch.
+    - Install dependencies with `npm i --no-audit --no-fund`.
+    - Enhance the logic for generating and committing documentation.
+    - Improve the preview output handling to provide a default message when no preview file is found.
