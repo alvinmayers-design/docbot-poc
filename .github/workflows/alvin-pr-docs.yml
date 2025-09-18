@@ -1,0 +1,144 @@
+name: ALVIN PR Docs
+
+"on":
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  generate-and-comment:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Collect PR metadata and changed files
+        id: pr
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const files = await github.paginate(
+              github.rest.pulls.listFiles,
+              { owner: context.repo.owner, repo: context.repo.repo, pull_number: pr.number, per_page: 100 }
+            );
+            core.setOutput('number', pr.number.toString());
+            core.setOutput('title', pr.title || '');
+            core.setOutput('files', JSON.stringify(files.map(f => ({
+              filename: f.filename,
+              status: f.status,
+              patch: f.patch || ''
+            }))));
+
+      - name: Generate preview (OpenAI if available; otherwise fallback)
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          FILES: ${{ steps.pr.outputs.files }}
+          TITLE: ${{ steps.pr.outputs.title }}
+        run: |
+          node - <<'NODE'
+          const fs = require('fs');
+
+          const files = JSON.parse(process.env.FILES || '[]');
+          const title = process.env.TITLE || '';
+          const hasKey = !!process.env.OPENAI_API_KEY;
+
+          const fallback = () => [
+            `# PR: ${title || '(no title)'}`,
+            '',
+            '## What changed',
+            '- (Auto-fallback) Summarize key changes.',
+            '',
+            '## Why',
+            '- (Auto-fallback) Rationale for this change.',
+            '',
+            '## How to validate',
+            '- (Auto-fallback) Steps to test locally and in CI.',
+            '',
+            '## Risk / Rollback',
+            '- (Auto-fallback) Risks and how to revert safely.',
+            '',
+            '## Changed files',
+            ...files.slice(0, 20).map(f => `- ${f.filename} (${f.status})`)
+          ].join('\n');
+
+          async function main() {
+            if (!hasKey) {
+              fs.writeFileSync('ALVIN_PR_PREVIEW.md', fallback(), 'utf8');
+              return;
+            }
+            const sys = 'You are ALVIN, an assistant that writes concise PR documentation (What changed, Why, How to validate, Risk/rollback). Use markdown and short sections.';
+            const user = 'PR Title: ' + title + '\\n\\nChanged files (name, status, patch excerpt):\\n' +
+              files.map(f => '- ' + f.filename + ' (' + f.status + ')\\n' + (f.patch || '').slice(0, 4000)).join('\\n\\n');
+            try {
+              const r = await fetch('https://api.openai.com/v1/chat/completions', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + process.env.OPENAI_API_KEY },
+                body: JSON.stringify({
+                  model: 'gpt-4o-mini',
+                  messages: [{ role: 'system', content: sys }, { role: 'user', content: user }],
+                  temperature: 0.2,
+                  max_tokens: 900
+                })
+              });
+              if (!r.ok) throw new Error('OpenAI HTTP ' + r.status + ': ' + await r.text());
+              const j = await r.json();
+              const text = (j.choices?.[0]?.message?.content || '').trim() || fallback();
+              fs.writeFileSync('ALVIN_PR_PREVIEW.md', text, 'utf8');
+            } catch (e) {
+              fs.writeFileSync('ALVIN_PR_PREVIEW.md', fallback() + `\n\n> (Fallback used; error: ${e.message})\n`, 'utf8');
+            }
+          }
+
+          main().catch(e => {
+            fs.writeFileSync('ALVIN_PR_PREVIEW.md', 'ALVIN fallback (unexpected error)\\n\\n' + e.message, 'utf8');
+          });
+          NODE
+
+      - name: Move preview into docs directory
+        run: |
+          mkdir -p docs
+          cp ALVIN_PR_PREVIEW.md "docs/ALVIN_PR_${{ steps.pr.outputs.number }}.md"
+
+      - name: Commit doc to PR branch
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          file_pattern: docs/ALVIN_PR_${{ steps.pr.outputs.number }}.md
+          commit_message: "chore(docs): add ALVIN PR ${{ steps.pr.outputs.number }} documentation"
+
+      - name: Comment on PR with preview
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const number = Number(${{ steps.pr.outputs.number }});
+            const owner = context.repo.owner;
+            const repo  = context.repo.repo;
+            const preview = fs.readFileSync('ALVIN_PR_PREVIEW.md', 'utf8');
+
+            const body = [
+              'ALVIN - Autogenerated PR Docs',
+              '',
+              '> Preview generated automatically. Human review required.',
+              '',
+              '<details><summary>Preview</summary>',
+              '',
+              preview,
+              '',
+              '</details>',
+              '',
+              'Full doc committed under docs/ALVIN_PR_' + number + '.md'
+            ].join('\n');
+
+            await github.rest.issues.createComment({ owner, repo, issue_number: number, body });
