@@ -3,7 +3,7 @@ const app = express();
 
 app.get('/', (req, res) => {
   res.json({
-    message: 'ALVIN demo app: hello world Alvin is here',
+    message: 'ALVIN demo app: hello world Alvin is here another time',
     version: '0.1.0',
   });
 });
