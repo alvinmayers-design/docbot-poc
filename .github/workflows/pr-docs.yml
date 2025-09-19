@@ -27,7 +27,8 @@ jobs:
           set -euo pipefail
 
           BASE="${{ github.event.pull_request.base.sha }}"
-          HEAD="${{ github.event.pull_request.head.sha }}"
+          # Use github.sha, which is the head of the branch checked out by actions/checkout
+          HEAD="${{ github.sha }}"
           git fetch --no-tags --prune --depth=1 origin "${BASE}:${BASE}" || true
 
           git diff --name-only "$BASE" "$HEAD" | tee changed_files.txt
@@ -176,4 +177,4 @@ jobs:
               repo: context.repo.repo,
               issue_number: context.payload.pull_request.number,
               body: "No code changes detected in this update — skipping doc generation."
-            });
+
