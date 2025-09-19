@@ -22,26 +22,21 @@ jobs:
 
       # 2) Compute diff & detect whether anything changed
       - name: Compute diff & detect changes
-        id: diff
-        run: |
-          set -euo pipefail
+  id: diff
+  run: |
+    set -euo pipefail
+    BASE="${{ github.event.pull_request.base.sha }}"
+    HEAD="${{ github.event.pull_request.head.sha }}"
+    git fetch --no-tags --prune --depth=1 origin "${BASE}:${BASE}" || true
 
-          BASE="${{ github.event.pull_request.base.sha }}"
-          # Use github.sha, which is the head of the branch checked out by actions/checkout
-          HEAD="${{ github.sha }}"
-          git fetch --no-tags --prune --depth=1 origin "${BASE}:${BASE}" || true
+    # Get list of changed files
+    git diff --name-only "$BASE" "$HEAD" > changed_files.txt
+    CHANGED=$(wc -l < changed_files.txt | tr -d ' ')
+    echo "files_changed=$([ "$CHANGED" -gt 0 ] && echo true || echo false)" >> $GITHUB_OUTPUT
 
-          git diff --name-only "$BASE" "$HEAD" | tee changed_files.txt
-          CHANGED=$(wc -l < changed_files.txt | tr -d ' ')
-          if [ "$CHANGED" -gt 0 ]; then
-            echo "files_changed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "files_changed=false" >> "$GITHUB_OUTPUT"
-          fi
+    # Force text diff, no matter what Git thinks
+    git diff --ignore-cr-at-eol --text "$BASE" "$HEAD" > code_diff.txt || true
 
-          git diff "$BASE" "$HEAD" > full_diff.txt
-          # Cap the diff so the prompt stays small (adjust if needed)
-          head -c 120000 full_diff.txt > code_diff.txt
 
       # 3) Build the prompt (only if changes exist) — defensive if the file is missing
       - name: Prepare prompt
