@@ -1,9 +1,8 @@
-name: PR Docs (ALVIN MVP)
+name: ALVIN PR Docs
 
 on:
   pull_request:
-    types: [opened, reopened, synchronize, ready_for_review]
-  workflow_dispatch: {}
+    types: [opened, reopened, synchronize, edited]
 
 permissions:
   contents: write
@@ -14,143 +13,193 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout PR head (full history)
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Compute diff & detect changes
-        id: diff
+      # -----------------------------
+      # Gather PR metadata + diff
+      # -----------------------------
+      - name: Collect PR metadata & diff
+        id: meta
         run: |
-          set -euo pipefail
-          BASE="${{ github.event.pull_request.base.sha }}"
-          HEAD="${{ github.event.pull_request.head.sha }}"
-          git fetch --no-tags --prune --depth=1 origin "${BASE}:${BASE}" || true
+          echo "PR_NUMBER=${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
 
-          git diff --name-only "$BASE" "$HEAD" | tee changed_files.txt
-          CHANGED=$(wc -l < changed_files.txt | tr -d ' ')
-          if [ "$CHANGED" -gt 0 ]; then
-            echo "files_changed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "files_changed=false" >> "$GITHUB_OUTPUT"
-          fi
+          {
+            echo "PR_TITLE<<EOF"
+            echo "${{ github.event.pull_request.title }}"
+            echo "EOF"
+            echo "PR_BODY<<EOF"
+            echo "${{ github.event.pull_request.body }}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
-          git diff "$BASE" "$HEAD" > full_diff.txt
-          head -c 120000 full_diff.txt > code_diff.txt  # ~120KB cap
+          git diff ${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }} > diff.txt
 
-      - name: Prepare prompt
-        id: prompt
-        if: steps.diff.outputs.files_changed == 'true'
+      # -----------------------------
+      # Build the LLM prompt
+      # -----------------------------
+      - name: Build ALVIN prompt
         run: |
-          set -euo pipefail
-          pr_title="${{ github.event.pull_request.title }}"
-          pr_body="${{ github.event.pull_request.body }}"
-          pr_body="${pr_body:-No description provided.}"
+          cat > prompt.txt <<'EOF'
+          You are ALVIN. Given the PR title, description, and diff, write concise human-readable release notes.
 
-          printf "%s\n" "You are a senior developer writing clear, concise PR documentation." > prompt_final.txt
-          printf "\n=== PR Title ===\n%s\n" "$pr_title" >> prompt_final.txt
-          printf "\n=== PR Description ===\n%s\n" "$pr_body" >> prompt_final.txt
-          printf "\n=== Code Diff (truncated) ===\n" >> prompt_final.txt
-          # Avoid backticks breaking JSON
-          sed 's/`/'"''"'/g' code_diff.txt >> prompt_final.txt
+          Sections to include (markdown):
+          - **Title**
+          - **Description**
+          - **Code Changes** (bullets)
+          - **Impact**
+          - **Risks & Rollback**
+          - **Testing**
 
-      - name: Call OpenAI (with debug + fallbacks)
+          Keep it short and useful. Avoid huge code blocks.
+
+          ----
+          PR Title:
+          ${{ steps.meta.outputs.PR_TITLE }}
+
+          PR Body:
+          ${{ steps.meta.outputs.PR_BODY }}
+
+          DIFF:
+          EOF
+          cat diff.txt >> prompt.txt
+
+      # -----------------------------
+      # Call OpenAI (expects secret OPENAI_API_KEY)
+      # -----------------------------
+      - name: Call OpenAI
         id: llm
-        if: steps.diff.outputs.files_changed == 'true'
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
-          set -euo pipefail
-          sudo apt-get update >/dev/null && sudo apt-get install -y jq >/dev/null
-
-          REQ=$(jq -n --arg model "gpt-4o-mini" --arg content "$(<prompt_final.txt)" \
-            '{model:$model, messages:[{role:"user", content:$content}], temperature:0.2}')
-
-          echo "::group::Prompt preview"
-          head -n 40 prompt_final.txt || true
-          echo "::endgroup::"
-
-          HTTP_CODE=0
-          RESP=$(curl -sS -w "\n%{http_code}" https://api.openai.com/v1/chat/completions \
-            -H "Authorization: Bearer ${OPENAI_API_KEY}" \
+          CONTENT=$(jq -Rs . < prompt.txt)
+          RESP=$(curl -s https://api.openai.com/v1/chat/completions \
+            -H "Authorization: Bearer $OPENAI_API_KEY" \
             -H "Content-Type: application/json" \
-            -d "$REQ") || true
+            -d "{\"model\":\"gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":$CONTENT}],\"temperature\":0.3}")
 
-          HTTP_CODE="$(echo "$RESP" | tail -n1)"
-          BODY_JSON="$(echo "$RESP" | sed '$d')"
+          TEXT=$(echo "$RESP" | jq -r '.choices[0].message.content')
+          if [ -z "$TEXT" ] || [ "$TEXT" = "null" ]; then
+            TEXT="(No content generated)"
+          fi
+          printf "%s\n" "$TEXT" > llm.md
 
-          echo "$BODY_JSON" > openai_resp.json
-          echo "HTTP_CODE=$HTTP_CODE"
-
-          if [ "${HTTP_CODE}" -lt 200 ] || [ "${HTTP_CODE}" -ge 300 ]; then
-            ERR_MSG="$(jq -r '.error.message // "Unknown error from OpenAI"' openai_resp.json 2>/dev/null || echo "Unknown error")"
-            {
-              echo "### ALVIN: LLM call failed"
-              echo
-              echo "**HTTP**: ${HTTP_CODE}"
-              echo
-              echo "> ${ERR_MSG}"
-            } > pr_docs.md
-            echo "ok=true" >> "$GITHUB_OUTPUT"
-            exit 0
+      # -----------------------------
+      # Ensure Jekyll config (so .md renders on Pages)
+      # -----------------------------
+      - name: Ensure Jekyll config
+        run: |
+          if [ ! -f "_config.yml" ]; then
+            cat > _config.yml <<'EOC'
+            title: ALVIN – PR Docs
+            theme: jekyll-theme-cayman
+            markdown: kramdown
+            EOC
+            # trim indentation
+            sed -i 's/^[[:space:]]*//' _config.yml
           fi
 
-          DOC="$(jq -r '.choices[0].message.content // empty' openai_resp.json)"
-          FILES="$(sed 's/^/- /' changed_files.txt || true)"
+      # -----------------------------
+      # Write PR doc to docs/releases/unreleased with front matter
+      # -----------------------------
+      - name: Write PR doc (with Jekyll front matter)
+        id: write
+        run: |
+          DOCS_DIR="docs/releases/unreleased"
+          mkdir -p "$DOCS_DIR"
+          FILE="$DOCS_DIR/pr-${{ steps.meta.outputs.PR_NUMBER }}.md"
 
-          if [ -z "${DOC}" ]; then
-            {
-              echo "### ALVIN: No content returned from model"
-              echo
-              echo "**Changed files:**"
-              echo "${FILES}"
-              echo
-              echo "_Check Actions artifact **openai_resp.json** for details._"
-            } > pr_docs.md
-            echo "ok=true" >> "$GITHUB_OUTPUT"
+          {
+            echo '---'
+            echo "title: PR #${{ steps.meta.outputs.PR_NUMBER }} – ${{ steps.meta.outputs.PR_TITLE }}"
+            echo 'layout: default'
+            echo '---'
+            echo
+            echo "# PR #${{ steps.meta.outputs.PR_NUMBER }}: ${{ steps.meta.outputs.PR_TITLE }}"
+            echo
+            echo "_Author:_ @${{ github.actor }}  \n_Branches:_ ${{ github.event.pull_request.head.ref }} → ${{ github.event.pull_request.base.ref }}"
+            echo
+            cat llm.md
+            echo
+            echo "**Traceability:** Linked PR #${{ steps.meta.outputs.PR_NUMBER }}"
+          } > "$FILE"
+
+          echo "FILE_PATH=$FILE" >> "$GITHUB_OUTPUT"
+
+      # -----------------------------
+      # Ensure docs/index.md exists; add front matter; add link
+      # -----------------------------
+      - name: Ensure/Update PR Docs Index
+        run: |
+          INDEX="docs/index.md"
+          mkdir -p docs
+
+          # Create index with front matter if missing
+          if [ ! -f "$INDEX" ]; then
+            cat > "$INDEX" <<'EOM'
+            ---
+            title: ALVIN – PR Documentation
+            layout: default
+            ---
+
+            # ALVIN – PR Documentation
+
+            Welcome! This site collects PR documentation automatically generated by ALVIN.
+
+            ## PR Docs Index
+            EOM
+            sed -i 's/^[[:space:]]*//' "$INDEX"
           else
-            {
-              echo "### ALVIN: PR Documentation"
-              echo
-              echo "**Changed files:**"
-              echo "${FILES}"
-              echo
-              echo "${DOC}"
-            } > pr_docs.md
-            echo "ok=true" >> "$GITHUB_OUTPUT"
+            # Ensure front matter exists
+            if ! head -n1 "$INDEX" | grep -q '^---$'; then
+              TMP="$INDEX.tmp"
+              {
+                echo '---'
+                echo 'title: ALVIN – PR Documentation'
+                echo 'layout: default'
+                echo '---'
+                echo
+                cat "$INDEX"
+              } > "$TMP" && mv "$TMP" "$INDEX"
+            fi
           fi
 
-          echo "::group::Doc preview"
-          head -n 20 pr_docs.md || true
-          echo "::endgroup::"
+          LINK="- [PR #${{ steps.meta.outputs.PR_NUMBER }}](./releases/unreleased/pr-${{ steps.meta.outputs.PR_NUMBER }}.md)"
 
-      - name: Upload debug artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: alvin-debug
-          path: |
-            prompt_final.txt
-            changed_files.txt
-            openai_resp.json
-            pr_docs.md
-          if-no-files-found: ignore
-          retention-days: 3
+          # Insert link below "## PR Docs Index" if not already present
+          if ! grep -q "pr-${{ steps.meta.outputs.PR_NUMBER }}.md" "$INDEX"; then
+            awk -v link="$LINK" '
+              BEGIN{added=0}
+              {print}
+              /^##[[:space:]]+PR Docs Index/ && !added {print link; added=1}
+            ' "$INDEX" > "$INDEX.tmp" && mv "$INDEX.tmp" "$INDEX"
+          fi
 
-      - name: Comment on PR (non-empty only)
-        if: steps.llm.outputs.ok == 'true'
+      # -----------------------------
+      # Commit & push the docs
+      # -----------------------------
+      - name: Commit & push docs
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs _config.yml || true
+          git commit -m "docs: publish PR #${{ steps.meta.outputs.PR_NUMBER }} notes" || echo "Nothing to commit"
+          git push
+
+      # -----------------------------
+      # Comment on PR with the public Pages link
+      # -----------------------------
+      - name: Comment on PR with Pages link
         uses: actions/github-script@v7
         with:
           script: |
-            const fs = require('fs');
-            const body = fs.readFileSync('pr_docs.md','utf8').trim();
-            if (!body) {
-              core.setFailed("Refusing to post empty comment.");
-            } else {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.payload.pull_request.number,
-                body
-              });
-            }
+            const pr = context.payload.pull_request.number;
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const url = `https://${owner}.github.io/${repo}/releases/unreleased/pr-${pr}.md`;
+            await github.rest.issues.createComment({
+              owner, repo, issue_number: pr,
+              body: `📄 PR docs published: ${url}`
+            });
