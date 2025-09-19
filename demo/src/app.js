@@ -15,3 +15,12 @@ function logWorkflowEvent(eventName) {
 
 // Trigger a sample event
 logWorkflowEvent("Workflow triggered");
+
+// demo: add helper for formatting user messages
+function formatUserMessage(username, message) {
+  const timestamp = new Date().toLocaleTimeString();
+  return `[${timestamp}] ${username}: ${message}`;
+}
+
+// quick test run
+console.log(formatUserMessage("Alice", "Hello ALVIN demo!"));
