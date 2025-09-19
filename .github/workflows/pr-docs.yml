@@ -73,9 +73,9 @@ jobs:
 
           # ALVIN: PR Documentation
 
-          **PR**: #{PR_NUMBER} â€” {PR_TITLE}
+          **PR**: #{PR_NUMBER} â€" {PR_TITLE}
 
-          ## Summary (1â€“2 sentences)
+          ## Summary (1â€"2 sentences)
           - Plain-English TL;DR of what changed and why it matters.
 
           ## Changed files
@@ -159,7 +159,7 @@ jobs:
               if [ -n "$DOC" ]; then
                 echo "$DOC"
               else
-                echo "_No AI-generated content returned â€” see debug artifacts._"
+                echo "_No AI-generated content returned â€" see debug artifacts._"
               fi
             } > pr_docs.md
             echo "ok=true" >> "$GITHUB_OUTPUT"
