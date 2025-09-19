@@ -89,16 +89,13 @@ jobs:
       # -----------------------------
       # Ensure Jekyll config (so .md renders on Pages)
       # -----------------------------
-      - name: Ensure Jekyll config
+            - name: Ensure Jekyll config
+        shell: bash
         run: |
           if [ ! -f "_config.yml" ]; then
-            cat > _config.yml <<'EOC'
-            title: ALVIN – PR Docs
-            theme: jekyll-theme-cayman
-            markdown: kramdown
-            EOC
-            # trim indentation
-            sed -i 's/^[[:space:]]*//' _config.yml
+            printf "title: ALVIN – PR Docs\n" > _config.yml
+            printf "theme: jekyll-theme-cayman\n" >> _config.yml
+            printf "markdown: kramdown\n" >> _config.yml
           fi
 
       # -----------------------------
