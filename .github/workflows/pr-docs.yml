@@ -89,14 +89,15 @@ jobs:
       # -----------------------------
       # Ensure Jekyll config (so .md renders on Pages)
       # -----------------------------
-            - name: Ensure Jekyll config
-        shell: bash
-        run: |
-          if [ ! -f "_config.yml" ]; then
-            printf "title: ALVIN – PR Docs\n" > _config.yml
-            printf "theme: jekyll-theme-cayman\n" >> _config.yml
-            printf "markdown: kramdown\n" >> _config.yml
-          fi
+    - name: Ensure Jekyll config
+  shell: bash
+  run: |
+    if [ ! -f "_config.yml" ]; then
+      printf "title: ALVIN – PR Docs\n" > _config.yml
+      printf "theme: jekyll-theme-cayman\n" >> _config.yml
+      printf "markdown: kramdown\n" >> _config.yml
+    fi
+
 
       # -----------------------------
       # Write PR doc to docs/releases/unreleased with front matter
