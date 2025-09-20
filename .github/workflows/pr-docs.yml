@@ -3,7 +3,7 @@ name: PR Docs (ALVIN MVP)
 on:
   pull_request:
     types: [opened, reopened, synchronize, ready_for_review]
-  workflow_dispatch: {}
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -12,7 +12,6 @@ permissions:
 jobs:
   generate:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout PR head (full history)
         uses: actions/checkout@v4
@@ -23,151 +22,75 @@ jobs:
         id: diff
         run: |
           set -euo pipefail
-
           BASE="${{ github.event.pull_request.base.sha }}"
           HEAD="${{ github.event.pull_request.head.sha }}"
-
           # Ensure we have the base commit locally
           git fetch --no-tags --prune --depth=1 origin "${BASE}:${BASE}" || true
-
           # List changed files
-          git diff --name-only "$BASE" "$HEAD" > changed_files.txt
-
+          git diff --name-only "$BASE" "$HEAD" | tee changed_files.txt
           CHANGED="$(wc -l < changed_files.txt | tr -d ' ')"
           if [ "$CHANGED" -gt 0 ]; then
             echo "files_changed=true" >> "$GITHUB_OUTPUT"
           else
             echo "files_changed=false" >> "$GITHUB_OUTPUT"
           fi
+          # Always force text diff (even if Git thinks a file is binary)
+          git diff -U0 --text "$BASE" "$HEAD" > code_diff.txt || true
 
-          # Always produce a text diff even if Git thinks files are binary
-          git diff --unified=0 --ignore-cr-at-eol --text "$BASE" "$HEAD" > full_diff.txt || true
-          head -c 120000 full_diff.txt > code_diff.txt || true
-
-      -       - name: Prepare prompt (ALVIN house style)
-        id: prompt
+      - name: Build prompt
         if: steps.diff.outputs.files_changed == 'true'
         run: |
           set -euo pipefail
-
-          pr_number="${{ github.event.pull_request.number }}"
           pr_title="${{ github.event.pull_request.title }}"
           pr_body="${{ github.event.pull_request.body }}"
-
-          # Fallback for empty body to avoid literal "null"
-          if [ -z "${pr_body:-}" ] || [ "${pr_body}" = "null" ]; then
+          if [ -z "$pr_body" ] || [ "$pr_body" = "null" ]; then
             pr_body="(No description provided in PR)"
           fi
+          {
+            echo "You are a senior developer writing clear, concise PR documentation."
+            echo
+            echo "=== PR Title ==="
+            echo "$pr_title"
+            echo
+            echo "=== PR Description ==="
+            echo "$pr_body"
+            echo
+            echo "=== Code Diff (truncated) ==="
+            sed 's/`/'"''"'/g' code_diff.txt
+          } > prompt_final.txt
 
-          # Turn changed_files.txt into a Markdown bullet list
-          if [ -s changed_files.txt ]; then
-            sed 's/^/- /' changed_files.txt > changed_files_bullets.txt
-          else
-            echo "- (no changed files detected)" > changed_files_bullets.txt
-          fi
-
-          cat > prompt_final.txt <<'PROMPT'
-          You are ALVIN, a concise release-docs writer for pull requests.
-
-          Follow this exact Markdown layout:
-
-          # ALVIN: PR Documentation
-
-          **PR**: #{PR_NUMBER} â€" {PR_TITLE}
-
-          ## Summary (1â€"2 sentences)
-          - Plain-English TL;DR of what changed and why it matters.
-
-          ## Changed files
-          {CHANGED_FILES_AS_BULLETS}
-
-          ## What changed (by file)
-          For each changed file, list concrete edits (added/removed/modified) as bullets. Avoid code blocks unless a small snippet clarifies intent.
-
-          ## Rationale
-          - Why these changes are needed (context, bug, feature, refactor).
-          - Any alternatives considered or trade-offs.
-
-          ## Testing
-          - Steps the reviewer can run to validate.
-          - Include commands or â€œExpected resultâ€ when useful.
-
-          ## Risk & Rollback
-          - Potential side effects / blast radius.
-          - How to roll back safely if needed.
-
-          ## Notes
-          - Edge cases, follow-ups, or TODOs.
-
-          (End of template. Keep it crisp. No chit-chat. No headings not listed above.)
-          PROMPT
-
-
-      - name: Call OpenAI (with debug + fallbacks)
-        id: llm
+      - name: Call OpenAI
         if: steps.diff.outputs.files_changed == 'true'
+        id: llm
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           set -euo pipefail
           sudo apt-get update >/dev/null && sudo apt-get install -y jq >/dev/null
-
-          MODEL="gpt-4o-mini"   # change here if your account needs a different model
-
-          # Build request JSON safely with jq
-          REQ=$(jq -n --arg model "$MODEL" --arg content "$(<prompt_final.txt)" \
-            '{model:$model, messages:[{role:"user", content:$content}], temperature:0.2}')
-
-          echo "::group::Prompt preview (first 40 lines)"
-          head -n 40 prompt_final.txt || true
-          echo "::endgroup::"
-
-          # Call API; capture status even for non-2xx responses
+          REQ=$(jq -n --arg content "$(<prompt_final.txt)" \
+               '{model:"gpt-4o-mini",messages:[{role:"user",content:$content}],temperature:0.2}')
           RESP=$(curl -sS -w "\n%{http_code}" https://api.openai.com/v1/chat/completions \
-            -H "Authorization: Bearer ${OPENAI_API_KEY}" \
-            -H "Content-Type: application/json" \
-            -d "$REQ" || true)
-
+                 -H "Authorization: Bearer ${OPENAI_API_KEY}" \
+                 -H "Content-Type: application/json" \
+                 -d "$REQ" || true)
           HTTP_CODE="$(echo "$RESP" | tail -n1)"
           BODY_JSON="$(echo "$RESP" | sed '$d')"
           echo "$BODY_JSON" > openai_resp.json
-          echo "HTTP_CODE=$HTTP_CODE"
-
+          DOC="$(jq -r '.choices[0].message.content // empty' openai_resp.json 2>/dev/null || true)"
           FILES="$(sed 's/^/- /' changed_files.txt || true)"
-
-          if [ "${HTTP_CODE}" -lt 200 ] || [ "${HTTP_CODE}" -ge 300 ]; then
-            ERR_MSG="$(jq -r '.error.message // "Unknown error from OpenAI"' openai_resp.json 2>/dev/null || echo "Unknown error")"
-            {
-              echo "### ALVIN: LLM call failed"
-              echo
-              echo "**HTTP**: ${HTTP_CODE}"
-              echo
-              echo "> ${ERR_MSG}"
-              echo
-              echo "**Changed files:**"
-              echo "${FILES}"
-            } > pr_docs.md
-            echo "ok=true" >> "$GITHUB_OUTPUT"
-          else
-            DOC="$(jq -r '.choices[0].message.content // empty' openai_resp.json)"
-            {
-              echo "### ALVIN: PR Documentation"
-              echo
-              echo "**Changed files:**"
-              echo "${FILES}"
-              echo
-              if [ -n "$DOC" ]; then
-                echo "$DOC"
-              else
-                echo "_No AI-generated content returned â€" see debug artifacts._"
-              fi
-            } > pr_docs.md
-            echo "ok=true" >> "$GITHUB_OUTPUT"
-          fi
-
-          echo "::group::Doc preview (first 20 lines)"
-          head -n 20 pr_docs.md || true
-          echo "::endgroup::"
+          {
+            echo "### ALVIN: PR Documentation"
+            echo
+            echo "**Changed files:**"
+            echo "$FILES"
+            echo
+            if [ -n "$DOC" ]; then
+              echo "$DOC"
+            else
+              echo "_No AI-generated content returned â€” see debug artifacts._"
+            fi
+          } > pr_docs.md
+          echo "ok=true" >> "$GITHUB_OUTPUT"
 
       - name: Upload debug artifacts
         if: always()
@@ -176,7 +99,6 @@ jobs:
           name: alvin-debug
           path: |
             changed_files.txt
-            full_diff.txt
             code_diff.txt
             prompt_final.txt
             openai_resp.json
@@ -184,20 +106,20 @@ jobs:
           if-no-files-found: ignore
           retention-days: 3
 
-      - name: Comment on PR (non-empty only)
+      - name: Comment on PR
         if: steps.llm.outputs.ok == 'true'
         uses: actions/github-script@v7
         with:
           script: |
             const fs = require('fs');
             const body = fs.readFileSync('pr_docs.md','utf8').trim();
-            if (!body) {
-              core.setFailed("Refusing to post empty comment.");
-            } else {
+            if (body) {
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: context.payload.pull_request.number,
                 body
               });
+            } else {
+              core.setFailed('Generated doc was empty.');
             }
