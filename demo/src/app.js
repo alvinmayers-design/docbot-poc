@@ -36,6 +36,23 @@ console.log(greetUser("ALVIN"));
 
 // ALVIN YAML test trigger
 
+// demo/src/app.js
+import { trackEvent, withTiming } from './metrics.js';
+
+// Existing code … keep whatever you have below, and sprinkle in a few calls:
+
+trackEvent('app:boot', { env: 'demo' });
+
+function greetUser(name) {
+  return withTiming('greetUser', () => {
+    const msg = `Hello, ${name}!`;
+    console.log(msg);
+    return msg;
+  });
+}
+
+// Simple demo execution (so CI logs show a couple of events)
+greetUser('ALVIN');
 
  
  
