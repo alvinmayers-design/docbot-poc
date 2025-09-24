@@ -1,0 +1,2 @@
+feature_flag: enable_alvin_demo
+rollout: canary
