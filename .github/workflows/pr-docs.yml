@@ -12,7 +12,6 @@ permissions:
 jobs:
   generate:
     runs-on: ubuntu-latest
-
     steps:
       # 1) Checkout the PR head with full history
       - name: Checkout PR head (full history)
@@ -25,12 +24,9 @@ jobs:
         id: diff
         run: |
           set -euo pipefail
-
           BASE="${{ github.event.pull_request.base.sha }}"
-          # Use github.sha, which is the head of the branch checked out by actions/checkout
           HEAD="${{ github.sha }}"
           git fetch --no-tags --prune --depth=1 origin "${BASE}:${BASE}" || true
-
           git diff --name-only "$BASE" "$HEAD" | tee changed_files.txt
           CHANGED=$(wc -l < changed_files.txt | tr -d ' ')
           if [ "$CHANGED" -gt 0 ]; then
@@ -38,28 +34,21 @@ jobs:
           else
             echo "files_changed=false" >> "$GITHUB_OUTPUT"
           fi
-
           git diff "$BASE" "$HEAD" > full_diff.txt
-          # Cap the diff so the prompt stays small (adjust if needed)
           head -c 120000 full_diff.txt > code_diff.txt
 
-            # 3) Build the prompt (only if changes exist) — defensive if the file is missing
+      # 3) Build the prompt (only if changes exist)
       - name: Prepare prompt (ALVIN house style)
         id: prompt
         if: steps.diff.outputs.files_changed == 'true'
         run: |
           set -euo pipefail
-
           pr_number="${{ github.event.pull_request.number }}"
           pr_title="${{ github.event.pull_request.title }}"
           pr_body="${{ github.event.pull_request.body }}"
-
-          # Fallback for empty body to avoid literal "null"
           if [ -z "${pr_body:-}" ] || [ "${pr_body}" = "null" ]; then
             pr_body="(No description provided in PR)"
           fi
-
-          # Turn changed_files.txt into a Markdown bullet list
           if [ -s changed_files.txt ]; then
             sed 's/^/- /' changed_files.txt > changed_files_bullets.txt
           else
@@ -102,13 +91,10 @@ jobs:
           (End of template. Keep it crisp. No chit-chat. No headings not listed above.)
           PROMPT
 
-          # Inject dynamic bits
           sed -i "s/#{PR_NUMBER}/$pr_number/g" prompt_final.txt
-          # Escape slashes in title so sed is happy
           safe_title=$(printf '%s' "$pr_title" | sed 's/[&/]/\\&/g')
           sed -i "s/{PR_TITLE}/$safe_title/g" prompt_final.txt
 
-          # Insert changed files bullets in place
           awk '
             BEGIN { inserted=0 }
             {
@@ -121,7 +107,6 @@ jobs:
             }
           ' prompt_final.txt > prompt_final.tmp && mv prompt_final.tmp prompt_final.txt
 
-          # Append a short, safe “diff context” so ALVIN has grounding without bloat
           {
             echo
             echo "----"
@@ -142,27 +127,18 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update >/dev/null && sudo apt-get install -y jq >/dev/null
-
-          MODEL="gpt-4o-mini"    # change here if your account needs another model
+          MODEL="gpt-4o-mini"
           REQ=$(jq -n --arg model "$MODEL" --arg content "$(<prompt_final.txt)" \
             '{model:$model, messages:[{role:"user", content:$content}], temperature:0.2}')
-
-          echo "::group::Prompt preview (first 40 lines)"
-          head -n 40 prompt_final.txt || true
-          echo "::endgroup::"
-
+          echo "::group::Prompt preview (first 40 lines)"; head -n 40 prompt_final.txt || true; echo "::endgroup::"
           RESP=$(curl -sS -w "\n%{http_code}" https://api.openai.com/v1/chat/completions \
             -H "Authorization: Bearer ${OPENAI_API_KEY}" \
             -H "Content-Type: application/json" \
             -d "$REQ" || true)
-
           HTTP_CODE="$(echo "$RESP" | tail -n1)"
           BODY_JSON="$(echo "$RESP" | sed '$d')"
           echo "$BODY_JSON" > openai_resp.json
-          echo "HTTP_CODE=$HTTP_CODE"
-
           FILES="$(sed 's/^/- /' changed_files.txt || true)"
-
           if [ "${HTTP_CODE}" -lt 200 ] || [ "${HTTP_CODE}" -ge 300 ]; then
             ERR_MSG="$(jq -r '.error.message // "Unknown error from OpenAI"' openai_resp.json 2>/dev/null || echo "Unknown error")"
             {
@@ -192,12 +168,9 @@ jobs:
             } > pr_docs.md
             echo "ok=true" >> "$GITHUB_OUTPUT"
           fi
+          echo "::group::Doc preview (first 20 lines)"; head -n 20 pr_docs.md || true; echo "::endgroup::"
 
-          echo "::group::Doc preview (first 20 lines)"
-          head -n 20 pr_docs.md || true
-          echo "::endgroup::"
-
-      # 5) Always upload artifacts so debugging is easy
+      # 5) Upload artifacts (always)
       - name: Upload debug artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -213,7 +186,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 3
 
-      # 6) Comment on the PR if we produced content (even if it's the “LLM failed” fallback)
+      # 6) Comment on the PR if we produced content
       - name: Comment on PR (non-empty only)
         if: steps.llm.outputs.ok == 'true'
         uses: actions/github-script@v7
@@ -232,7 +205,7 @@ jobs:
               });
             }
 
-      # 7) Optional: leave a friendly note if there were no code changes
+      # 7) Friendly note if no code changes
       - name: Comment on PR (no changes)
         if: steps.diff.outputs.files_changed != 'true'
         uses: actions/github-script@v7
