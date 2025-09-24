@@ -43,96 +43,95 @@ jobs:
           # Cap the diff so the prompt stays small (adjust if needed)
           head -c 120000 full_diff.txt > code_diff.txt
 
-      # 3) Build the prompt (only if changes exist) — defensive if the file is missing
+            # 3) Build the prompt (only if changes exist) — defensive if the file is missing
       - name: Prepare prompt (ALVIN house style)
-  id: prompt
-  if: steps.diff.outputs.files_changed == 'true'
-  run: |
-    set -euo pipefail
+        id: prompt
+        if: steps.diff.outputs.files_changed == 'true'
+        run: |
+          set -euo pipefail
 
-    pr_number="${{ github.event.pull_request.number }}"
-    pr_title="${{ github.event.pull_request.title }}"
-    pr_body="${{ github.event.pull_request.body }}"
+          pr_number="${{ github.event.pull_request.number }}"
+          pr_title="${{ github.event.pull_request.title }}"
+          pr_body="${{ github.event.pull_request.body }}"
 
-    # Fallback for empty body to avoid literal "null"
-    if [ -z "${pr_body:-}" ] || [ "${pr_body}" = "null" ]; then
-      pr_body="(No description provided in PR)"
-    fi
+          # Fallback for empty body to avoid literal "null"
+          if [ -z "${pr_body:-}" ] || [ "${pr_body}" = "null" ]; then
+            pr_body="(No description provided in PR)"
+          fi
 
-    # Turn changed_files.txt into a Markdown bullet list
-    if [ -s changed_files.txt ]; then
-      sed 's/^/- /' changed_files.txt > changed_files_bullets.txt
-    else
-      echo "- (no changed files detected)" > changed_files_bullets.txt
-    fi
+          # Turn changed_files.txt into a Markdown bullet list
+          if [ -s changed_files.txt ]; then
+            sed 's/^/- /' changed_files.txt > changed_files_bullets.txt
+          else
+            echo "- (no changed files detected)" > changed_files_bullets.txt
+          fi
 
-    cat > prompt_final.txt <<'PROMPT'
-You are ALVIN, a concise release-docs writer for pull requests.
+          cat > prompt_final.txt <<'PROMPT'
+          You are ALVIN, a concise release-docs writer for pull requests.
 
-Follow this exact Markdown layout:
+          Follow this exact Markdown layout:
 
-# ALVIN: PR Documentation
+          # ALVIN: PR Documentation
 
-**PR**: #{PR_NUMBER} — {PR_TITLE}
+          **PR**: #{PR_NUMBER} — {PR_TITLE}
 
-## Summary (1–2 sentences)
-- Plain-English TL;DR of what changed and why it matters.
+          ## Summary (1–2 sentences)
+          - Plain-English TL;DR of what changed and why it matters.
 
-## Changed files
-{CHANGED_FILES_AS_BULLETS}
+          ## Changed files
+          {CHANGED_FILES_AS_BULLETS}
 
-## What changed (by file)
-For each changed file, list concrete edits (added/removed/modified) as bullets. Avoid code blocks unless a small snippet clarifies intent.
+          ## What changed (by file)
+          For each changed file, list concrete edits (added/removed/modified) as bullets. Avoid code blocks unless a small snippet clarifies intent.
 
-## Rationale
-- Why these changes are needed (context, bug, feature, refactor).
-- Any alternatives considered or trade-offs.
+          ## Rationale
+          - Why these changes are needed (context, bug, feature, refactor).
+          - Any alternatives considered or trade-offs.
 
-## Testing
-- Steps the reviewer can run to validate.
-- Include commands or “Expected result” when useful.
+          ## Testing
+          - Steps the reviewer can run to validate.
+          - Include commands or “Expected result” when useful.
 
-## Risk & Rollback
-- Potential side effects / blast radius.
-- How to roll back safely if needed.
+          ## Risk & Rollback
+          - Potential side effects / blast radius.
+          - How to roll back safely if needed.
 
-## Notes
-- Edge cases, follow-ups, or TODOs.
+          ## Notes
+          - Edge cases, follow-ups, or TODOs.
 
-(End of template. Keep it crisp. No chit-chat. No headings not listed above.)
-PROMPT
+          (End of template. Keep it crisp. No chit-chat. No headings not listed above.)
+          PROMPT
 
-    # Inject dynamic bits
-    sed -i "s/#{PR_NUMBER}/$pr_number/g" prompt_final.txt
-    # Escape slashes in title so sed is happy
-    safe_title=$(printf '%s' "$pr_title" | sed 's/[&/]/\\&/g')
-    sed -i "s/{PR_TITLE}/$safe_title/g" prompt_final.txt
+          # Inject dynamic bits
+          sed -i "s/#{PR_NUMBER}/$pr_number/g" prompt_final.txt
+          # Escape slashes in title so sed is happy
+          safe_title=$(printf '%s' "$pr_title" | sed 's/[&/]/\\&/g')
+          sed -i "s/{PR_TITLE}/$safe_title/g" prompt_final.txt
 
-    # Insert changed files bullets in place
-    awk '
-      BEGIN { inserted=0 }
-      { 
-        if ($0 ~ /\{CHANGED_FILES_AS_BULLETS\}/ && inserted==0) {
-          while ((getline line < "changed_files_bullets.txt") > 0) print line
-          inserted=1
-          next
-        }
-        print
-      }
-    ' prompt_final.txt > prompt_final.tmp && mv prompt_final.tmp prompt_final.txt
+          # Insert changed files bullets in place
+          awk '
+            BEGIN { inserted=0 }
+            {
+              if ($0 ~ /\{CHANGED_FILES_AS_BULLETS\}/ && inserted==0) {
+                while ((getline line < "changed_files_bullets.txt") > 0) print line
+                inserted=1
+                next
+              }
+              print
+            }
+          ' prompt_final.txt > prompt_final.tmp && mv prompt_final.tmp prompt_final.txt
 
-    # Append a short, safe “diff context” so ALVIN has grounding without bloat
-    # (We already trimmed the diff in a previous step.)
-    {
-      echo
-      echo "----"
-      echo "Context for ALVIN (do not include as a section in the final output):"
-      echo "PR description:"
-      echo "$pr_body"
-      echo
-      echo "Truncated diff follows:"
-      sed 's/`/'"''"'/g' code_diff.txt
-    } >> prompt_final.txt
+          # Append a short, safe “diff context” so ALVIN has grounding without bloat
+          {
+            echo
+            echo "----"
+            echo "Context for ALVIN (do not include as a section in the final output):"
+            echo "PR description:"
+            echo "$pr_body"
+            echo
+            echo "Truncated diff follows:"
+            sed 's/`/'"''"'/g' code_diff.txt
+          } >> prompt_final.txt
 
       # 4) Call OpenAI (with debug + fallbacks)
       - name: Call OpenAI (with debug + fallbacks)
